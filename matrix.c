@@ -4,10 +4,10 @@
 
 #define SMART_VAR(type, name, initial) type name __attribute__((cleanup(freeVar))) = (initial)
 #define PERSIST_VAR(type, name, initial) type name = initial; \
-										var_list *ls = getList(); ls->data = name
-#define INIT_INFO(data, sz, eps, val) INIT_INFO_PHASE1(data, sz, eps, val, __LINE__)
-#define INIT_INFO_PHASE1(data, sz, eps, val, seed) INIT_INFO_PHASE2(data, sz, eps, val, seed)
-#define INIT_INFO_PHASE2(data, sz, eps, val, seed) SMART_VAR(float *, vl##seed, malloc(sizeof(float) * sz[0] * sz[1])); \
+										persist_va_list *ls = getList(); ls->data = name
+#define INIT_FLT(data, sz, eps, val) INIT_FLT_PHASE1(data, sz, eps, val, __LINE__)
+#define INIT_FLT_PHASE1(data, sz, eps, val, seed) INIT_FLT_PHASE2(data, sz, eps, val, seed)
+#define INIT_FLT_PHASE2(data, sz, eps, val, seed) SMART_VAR(float *, vl##seed, malloc(sizeof(float) * sz[0] * sz[1])); \
 do { \
 	for(int i = 0; i < sz[0]; ++i) for(int j = 0; j < sz[1]; ++j) vl##seed[i*sz[1]+j] = val[i][j]; \
 	data.magic = 1; \
@@ -17,17 +17,27 @@ do { \
 	data.values = vl##seed; \
    } while(0)
 
-#define INIT_MATRIX(matrix, data, equ, ml) matrix.priv = &data; \
-matrix.equal = equ; matrix.mul = ml
+#define INIT_EQUAL(matrix, equ) bool equal##__LINE__(void *input){ \
+							   return equ(matrix.priv, input);} \
+							   matrix.equal = equal##__LINE__
 
-#define CREATE_MATRIX(name, sz, eps, val, equ, ml) Matrix_Info data##__LINE__; \
-INIT_INFO(data##__LINE__, sz, eps, val); \
+#define INIT_MULTIPLY(matrix, ml) Matrix_Flt multiply##__LINE__(void *input){ \
+							      return ml(matrix.priv, input);} \
+								  matrix.mul = multiply##__LINE__
+
+#define INIT_FUNCTION(matrix, equ, ml) INIT_EQUAL(matrix, equ); INIT_MULTIPLY(matrix, ml)
+
+#define INIT_MATRIX(matrix, data, equ, ml) matrix.priv = &data; \
+INIT_FUNCTION(matrix, equ, ml)
+
+#define CREATE_MATRIX(name, sz, eps, val, equ, ml) Matrix_Flt data##__LINE__; \
+INIT_FLT(data##__LINE__, sz, eps, val); \
 Matrix name; INIT_MATRIX(name, data##__LINE__, equ, ml)
 
-typedef struct __var_list var_list;
-struct __var_list {
+typedef struct __persist_va_list persist_va_list;
+struct __persist_va_list {
 	void *data;
-	var_list *next;
+	persist_va_list *next;
 };
 
 /**
@@ -36,20 +46,20 @@ struct __var_list {
  * The first byte is used to store type value and distinguish different implementations,
  * all the implementations should follow this format.
  */
-typedef struct __matrix_info {
+typedef struct {
 	char magic;		///> nust be the first member to do RTTI
 	int size[2];
 	float epsilon;
 	float *values;
-} Matrix_Info;
+} Matrix_Flt;
 
 typedef struct __matrix_impl Matrix;
 struct __matrix_impl {
 	void *priv;
 
     /* operations */
-    bool (*equal)(void *self, void *input);
-    Matrix_Info (*mul)(void *self, void *input);
+    bool (*equal)(void *input);
+    Matrix_Flt (*mul)(void *input);
 };
 
 static inline void freeVar(void *ptr)
@@ -62,21 +72,21 @@ static inline char getMagic(void *ptr)
 	return *(char *)ptr;
 }
 
-static var_list *listHead = NULL;
-static var_list *getList()
+static persist_va_list *listHead = NULL;
+static persist_va_list *getList()
 {
-	var_list **list = &listHead;
+	persist_va_list **list = &listHead;
 	
 	while (*list != NULL)
 		list = &((*list)->next);
 	
-	*list = malloc(sizeof(var_list));
+	*list = malloc(sizeof(persist_va_list));
 	(*list)->data = NULL;
 	(*list)->next = NULL;
 	return *list;
 }
 
-static void delList(var_list *list)
+static void delList(persist_va_list *list)
 {
 	if (list != NULL)
 	{
@@ -89,7 +99,8 @@ static void delList(var_list *list)
 }
 
 /**
- * TODO:make the way input arguments more natural
+ * Do not assign this function to the interface directly,
+ * Use INIT_MULTIPLY macro to init the interface so that you can call it more naturally
  * like bool = matA.equal(matB)
  */
 static bool equal(void *self, void *input)
@@ -97,8 +108,8 @@ static bool equal(void *self, void *input)
 	if (getMagic(self) != getMagic(input))	///< different implementation
 		return false;
 	
-	Matrix_Info *selfMat = (Matrix_Info *)self;
-	Matrix_Info *inMat = (Matrix_Info *)input;
+	Matrix_Flt *selfMat = (Matrix_Flt *)self;
+	Matrix_Flt *inMat = (Matrix_Flt *)input;
 	
 	if (selfMat->size[0] != inMat->size[0] || 
 	    selfMat->size[1] != inMat->size[1])
@@ -117,19 +128,20 @@ static bool equal(void *self, void *input)
 }
 
 /**
- * TODO:make the way input arguments more natural
+ * Do not assign this function to the interface directly,
+ * Use INIT_EQUAL macro to init the interface so that you can call it more naturally
  * like matO = matA.mul(matB)
  */
-static Matrix_Info mul(void *self, void *input)
+static Matrix_Flt mul(void *self, void *input)
 {
 	if (getMagic(self) != getMagic(input))
-		return (Matrix_Info){};
+		return (Matrix_Flt){};
 	
-	Matrix_Info *selfMat = (Matrix_Info *)self;
-	Matrix_Info *inMat = (Matrix_Info *)input;
+	Matrix_Flt *selfMat = (Matrix_Flt *)self;
+	Matrix_Flt *inMat = (Matrix_Flt *)input;
 	
 	if (selfMat->size[1] != inMat->size[0])
-		return (Matrix_Info){};
+		return (Matrix_Flt){};
 	
 	PERSIST_VAR(float *, mat, malloc(sizeof(float) * selfMat->size[0] * inMat->size[1]));
 	
@@ -144,7 +156,7 @@ static Matrix_Info mul(void *self, void *input)
 		}
 	}
 
-    return (Matrix_Info){.values = mat, .size[0] = selfMat->size[0], .size[1] = inMat->size[1]};
+    return (Matrix_Flt){.values = mat, .size[0] = selfMat->size[0], .size[1] = inMat->size[1]};
 }
 
 __attribute__((destructor)) static void varDestruct()
@@ -160,14 +172,14 @@ int main()
 	float epsilon = 0.0001;
 	CREATE_MATRIX(matrix, size, epsilon, value, equal, mul);
 	
-	int size1[2] = {2, 3};
-	float value1[2][3] = {{1.0, 2.0, 3.0}, {3.0, 4.0, 5.0}};
-	Matrix_Info input;
-	INIT_INFO(input, size1, epsilon, value1);
+	int size1[2] = {2, 4};
+	float value1[2][4] = {{1.0, 2.0, 3.0, 4.0}, {4.0, 5.0, 6.0, 7.0}};
+	Matrix_Flt input;
+	INIT_FLT(input, size1, epsilon, value1);
 	
-	printf("is equal:%d\n", matrix.equal(matrix.priv, &input));
+	printf("is equal:%d\n", matrix.equal(&input));
 	
-	Matrix_Info result = matrix.mul(matrix.priv, &input);
+	Matrix_Flt result = matrix.mul(&input);
 	
 	for (int i = 0; i < result.size[0]; ++i)
 	{
